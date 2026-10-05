@@ -34,6 +34,13 @@ fail() {
   FAILED=1
 }
 
+# The FUSE launch needs a setuid fusermount (FUSE 2) or fusermount3 (FUSE 3);
+# libfuse2t64 alone ships neither.
+if ! command -v fusermount >/dev/null && ! command -v fusermount3 >/dev/null; then
+  echo "::error::neither fusermount nor fusermount3 is on PATH; install fuse3 (Ubuntu 24.04) or fuse (22.04)"
+  exit 1
+fi
+
 chmod +x "$APPIMAGE"
 "$APPIMAGE" --appimage-extract >extract.log 2>&1 || {
   tail -n 50 extract.log

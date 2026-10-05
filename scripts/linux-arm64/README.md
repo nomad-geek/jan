@@ -10,15 +10,16 @@ edits nothing upstream, so syncing this fork with upstream stays conflict-free.
 
 ## Running the workflow
 
-1. Sync the fork so it has the upstream tag you want, e.g. `v0.8.4`.
-2. Actions → **linux-arm64-appimage** → **Run workflow**:
+Actions → **linux-arm64-appimage** → **Run workflow**. The tag is checked out
+from `janhq/jan` directly, not from this fork, so the fork does not need to carry
+it (syncing a fork does not copy tags).
 
-   | Input | Default | Meaning |
-   |---|---|---|
-   | `tag` | `v0.8.4` | Upstream tag to build, or `main` to try the next release's layout (never published) |
-   | `llama_cpp_tag` | `b9967` | `janhq/llama.cpp` release built as the backend (releases that download their backend only) |
-   | `runner` | `ubuntu-24.04-arm` | Build host; sets the oldest distro the AppImage runs on (below) |
-   | `publish` | `true` | Create or update the release `<tag>-linux-arm64` |
+| Input | Default | Meaning |
+|---|---|---|
+| `tag` | `v0.8.4` | Upstream tag to build, or `main` to try the next release's layout (never published) |
+| `llama_cpp_tag` | `b9967` | `janhq/llama.cpp` release built as the backend (releases that download their backend only) |
+| `runner` | `ubuntu-24.04-arm` | Build host; sets the oldest distro the AppImage runs on (below) |
+| `publish` | `true` | Create or update the release `<tag>-linux-arm64` |
 
 The workflow file must be on the fork's default branch for **Run workflow** to
 appear.
@@ -33,7 +34,10 @@ Jobs:
 - `release` publishes them.
 
 Every run also keeps the files as workflow artifacts. Rerunning for the same tag
-updates the release in place and replaces assets of the same name.
+updates the release in place: it replaces assets of the same name and the notes,
+and removes a backend archive left by a run with another `llama_cpp_tag`. The
+release's own tag points at this repo's workflow commit; its notes name the
+upstream tag and commit that were built, and the `janhq/llama.cpp` commit.
 
 ### What the build changes
 
@@ -47,6 +51,10 @@ places where upstream's Linux build hardcodes x86_64:
 Every substitution must match. If a future tag reworks one of these files, the
 build stops there and names the file, rather than producing a wrong binary.
 
+The aarch64 linuxdeploy (at the version upstream pins) and appimagetool (from
+its `continuous` release) are downloaded without a checksum, as upstream's x64
+build does.
+
 The build sets `AUTO_UPDATER_DISABLED=true`, since upstream's update feed only
 carries x86_64. It uses no secrets: the app is unsigned, and analytics keys are
 empty.
@@ -58,8 +66,8 @@ chmod +x Jan_0.8.4_aarch64.AppImage
 ./Jan_0.8.4_aarch64.AppImage
 ```
 
-Running an AppImage needs FUSE 2 (`sudo apt install libfuse2t64`, or `libfuse2`
-before Ubuntu 24.04). Without it, run
+Running an AppImage needs FUSE: on Ubuntu 24.04+ `sudo apt install libfuse2t64
+fuse3`, on 22.04 `sudo apt install libfuse2 fuse`. Without it, run
 `./Jan_0.8.4_aarch64.AppImage --appimage-extract-and-run`.
 
 Check a download with `sha256sum -c Jan_0.8.4_aarch64.AppImage.sha256`.
@@ -92,8 +100,8 @@ skips the separate backend.
   Ubuntu 24.04+, Debian 13+. The `ubuntu-22.04-arm` runner gives a glibc 2.35
   floor (Ubuntu 22.04+, Debian 12+). Its older compiler is more likely to need
   the backend fallback above.
-- **No auto-update.** To update, sync the fork, rerun the workflow for the new
-  tag, and download the new AppImage.
+- **No auto-update.** To update, rerun the workflow for the new upstream tag,
+  and download the new AppImage.
 - **Unsigned.** There is no updater signature, and no upstream signing key.
 - **Model downloads.** Upstream signs requests to its download mirror with a key
   only its builds carry. Without it Jan falls back to the original Hugging Face
@@ -114,7 +122,8 @@ The `smoke` job runs on a fresh runner without the build's `-dev` packages:
 - `smoke-backend.sh` checks the backend file name against Jan's own pattern. It
   unpacks the archive into the layout Jan installs to and checks that
   `llama-server` resolves its libraries through its own rpath. It then serves a
-  15M-parameter model (19 MB) and generates tokens.
+  15M-parameter model (19 MB, pinned to a Hugging Face commit and checked by
+  sha256) and generates tokens.
 
 On failure the job uploads the logs as the `smoke-logs` artifact. A failed build
 uploads `appimage-debug`.

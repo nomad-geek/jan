@@ -21,8 +21,10 @@ mkdir -p "$SMOKE/home"
 cd "$SMOKE"
 export HOME="$SMOKE/home"
 PORT=18080
-MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
-MODEL_BYTES=19077344
+# Pinned to a commit and checked by hash. ggml-org/models redirects here.
+MODEL_COMMIT=499bc8821c6b12b4e53c5bffcb21ec206f212d81
+MODEL_URL=https://huggingface.co/ggml-org/models-moved/resolve/$MODEL_COMMIT/tinyllamas/stories15M-q4_0.gguf
+MODEL_SHA256=66967fbece6dbe97886593fdbb73589584927e29119ec31f08090732d1861739
 
 # 1. The name, checked with the regex from Jan's llamacpp extension
 #    (extensions/llamacpp-extension/src/index.ts, installBackend).
@@ -62,11 +64,10 @@ env -u LD_LIBRARY_PATH "$SERVER" --version
 
 # 4. Real inference with a 19 MB model.
 curl -fsSL --retry 3 -o stories15M-q4_0.gguf "$MODEL_URL"
-size=$(stat -c %s stories15M-q4_0.gguf)
-if [ "$size" -ne "$MODEL_BYTES" ]; then
-  echo "::error::model is $size bytes, expected $MODEL_BYTES"
+echo "$MODEL_SHA256  stories15M-q4_0.gguf" | sha256sum -c - || {
+  echo "::error::model checksum mismatch"
   exit 1
-fi
+}
 
 env -u LD_LIBRARY_PATH "$SERVER" -m stories15M-q4_0.gguf --host 127.0.0.1 --port "$PORT" -c 256 \
   >llama-server.log 2>&1 &

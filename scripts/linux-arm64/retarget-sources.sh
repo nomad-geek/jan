@@ -22,9 +22,10 @@ if [ "$(uname -m)" != "aarch64" ]; then
   exit 1
 fi
 
+# count <pattern> <file>: occurrences, not matching lines.
 count() {
-  # grep -c exits 1 on zero matches; a zero count is a valid answer here.
-  grep -cF -- "$1" "$2" || true
+  # grep exits 1 on zero matches; a zero count is a valid answer here.
+  { grep -oF -- "$1" "$2" || true; } | wc -l
 }
 
 # retarget <file> <from> <to> <min-replacements>

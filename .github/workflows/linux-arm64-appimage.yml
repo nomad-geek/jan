@@ -63,9 +63,12 @@ jobs:
             exit 1
           fi
 
-      - name: Check out the tag
+      # Straight from upstream: syncing a fork does not copy tags, and the
+      # fork's own copy of a tag is not what upstream released.
+      - name: Check out the upstream tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          repository: janhq/jan
           ref: ${{ inputs.tag }}
           path: jan
           fetch-depth: 1
@@ -81,6 +84,15 @@ jobs:
           fi
           version=$(jq -r .version jan/src-tauri/tauri.conf.json)
           sha=$(git -C jan rev-parse HEAD)
+          # Both go into later steps and file names; accept nothing unexpected.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::unexpected version '$version' in src-tauri/tauri.conf.json"
+            exit 1
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected commit '$sha'"
+            exit 1
+          fi
           echo "layout=$layout version=$version sha=$sha"
           {
             echo "layout=$layout"
@@ -124,10 +136,13 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 150
     steps:
-      - name: Check out the tag
+      # The commit prepare resolved the upstream tag to, so a tag moved
+      # mid-run cannot change what is built.
+      - name: Check out the upstream tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ inputs.tag }}
+          repository: janhq/jan
+          ref: ${{ needs.prepare.outputs.sha }}
           path: jan
           fetch-depth: 1
           persist-credentials: false
@@ -252,9 +267,25 @@ jobs:
       - name: Install runtime test tools
         run: |
           # Deliberately no -dev packages: a library only the build host had must fail here.
-          if [ "$(. /etc/os-release && echo "$VERSION_ID")" = "22.04" ]; then fuse=libfuse2; else fuse=libfuse2t64; fi
+          if [ "$(. /etc/os-release && echo "$VERSION_ID")" = "22.04" ]; then
+            fuse=libfuse2 fusermount_pkg=fuse
+          else
+            fuse=libfuse2t64 fusermount_pkg=fuse3
+          fi
           sudo apt-get update
           sudo apt-get install -y xvfb xauth file "$fuse"
+          # libfuse2(t64) ships no fusermount; the FUSE launch needs one. Only
+          # install it when missing: fuse and fuse3 conflict on 22.04.
+          if ! command -v fusermount >/dev/null && ! command -v fusermount3 >/dev/null; then
+            sudo apt-get install -y "$fusermount_pkg"
+          fi
+          # A FUSE 2 runtime calls fusermount by name; fusermount3 speaks the same protocol.
+          if ! command -v fusermount >/dev/null && command -v fusermount3 >/dev/null; then
+            mkdir -p "$RUNNER_TEMP/fuse-shim"
+            ln -sf "$(command -v fusermount3)" "$RUNNER_TEMP/fuse-shim/fusermount"
+            echo "$RUNNER_TEMP/fuse-shim" >>"$GITHUB_PATH"
+          fi
+          command -v fusermount fusermount3 || true
 
       - name: Download AppImage
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -341,17 +372,55 @@ jobs:
               echo "1. Download \`llama-${LLAMA_TAG}-bin-linux-arm64.tar.gz\` from this release."
               echo "2. In Jan: **Settings → llama.cpp → Install backend from file**, and pick that file."
               echo "3. Jan selects the \`linux-arm64\` backend; download a model and run it."
+              echo
+              # The llama.cpp tag is mutable; name the commit that was built.
+              llama_commit=$(cat dist/llama-commit.txt)
+              if ! [[ "$llama_commit" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::unexpected llama.cpp commit '$llama_commit'" >&2
+                exit 1
+              fi
+              echo "The backend is built from \`janhq/llama.cpp\` tag \`$LLAMA_TAG\` at commit \`$llama_commit\`."
             fi
             echo
             echo "Each file has a \`.sha256\` beside it: \`sha256sum -c <file>.sha256\`."
           } >"$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
+      # Same-named assets are overwritten on publish, but a rerun with another
+      # llama_cpp_tag (or a release moving to the engine layout) would leave
+      # the previous backend archive behind.
+      - name: Remove stale backend assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}-linux-arm64
+          LAYOUT: ${{ needs.prepare.outputs.layout }}
+          LLAMA_TAG: ${{ inputs.llama_cpp_tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "no release $RELEASE_TAG yet"
+            exit 0
+          fi
+          keep=""
+          if [ "$LAYOUT" = "runtime-backend" ]; then keep="llama-${LLAMA_TAG}-bin-linux-arm64.tar.gz"; fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+            while read -r name; do
+              case "$name" in
+                llama-*-bin-linux-arm64.tar.gz | llama-*-bin-linux-arm64.tar.gz.sha256)
+                  if [ "$name" != "$keep" ] && [ "$name" != "$keep.sha256" ]; then
+                    echo "deleting stale asset $name"
+                    gh release delete-asset "$RELEASE_TAG" "$name" --repo "$GITHUB_REPOSITORY" --yes
+                  fi
+                  ;;
+              esac
+            done
+
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag }}-linux-arm64
-          target_commitish: ${{ needs.prepare.outputs.sha }}
+          # The release tag lives in this repo, so it points at this workflow's
+          # commit; the notes name the upstream tag and commit that were built.
+          target_commitish: ${{ github.sha }}
           name: Jan ${{ needs.prepare.outputs.version }} — Linux arm64 (unofficial)
           body_path: ${{ runner.temp }}/notes.md
           prerelease: false

@@ -35,7 +35,9 @@ ASSET="llama-$TAG-bin-linux-arm64.tar.gz"
 rm -rf "$SRC"
 git clone --depth 1 --branch "$TAG" https://github.com/janhq/llama.cpp.git "$SRC"
 cd "$SRC"
-echo "llama.cpp $TAG at $(git rev-parse HEAD)"
+# The tag is mutable; record the commit actually built, for the release notes.
+COMMIT=$(git rev-parse HEAD)
+echo "llama.cpp $TAG at $COMMIT"
 
 # shellcheck disable=SC2016 # a literal $ORIGIN, for the dynamic loader
 COMMON_FLAGS=(
@@ -96,6 +98,7 @@ mkdir -p "$OUT_DIR"
 OUT_DIR=$(cd "$OUT_DIR" && pwd)
 tar -czf "$OUT_DIR/$ASSET" build/bin
 (cd "$OUT_DIR" && sha256sum "$ASSET" >"$ASSET.sha256")
+echo "$COMMIT" >"$OUT_DIR/llama-commit.txt"
 
 echo "built $OUT_DIR/$ASSET ($CPU_MODE)"
 cat "$OUT_DIR/$ASSET.sha256"
