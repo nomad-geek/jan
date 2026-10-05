@@ -1,0 +1,19 @@
+{
+  "$comment": "Lint for the Linux arm64 AppImage build: shellcheck on its scripts, actionlint on its workflow. The app's own JS/Rust suites run in the existing CI workflows.",
+  "format": "test-tiers/v1",
+  "tiers": {
+    "light": {
+      "image": "koalaman/shellcheck-alpine:stable",
+      "memory": "256m",
+      "run": "shellcheck --severity=style scripts/linux-arm64/*.sh",
+      "extra": [
+        {
+          "image": "rhysd/actionlint:latest",
+          "workdir": "/code",
+          "memory": "256m",
+          "args": ["-color", ".github/workflows/linux-arm64-appimage.yml"]
+        }
+      ]
+    }
+  }
+}

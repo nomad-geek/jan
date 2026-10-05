@@ -1,0 +1,364 @@
+name: linux-arm64-appimage
+
+# Builds an upstream Jan release tag as a Linux aarch64 AppImage on GitHub's
+# native ARM runners, CPU only, unsigned and without auto-update. Releases that
+# download their llama.cpp backend at runtime also get a linux-arm64 backend
+# archive, which the user installs once from Settings. See
+# scripts/linux-arm64/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream Jan tag to build (e.g. v0.8.4), or main to try the compiled-in engine layout'
+        required: true
+        default: 'v0.8.4'
+        type: string
+      llama_cpp_tag:
+        description: 'janhq/llama.cpp release to build as the linux-arm64 backend (runtime-backend layout only)'
+        required: true
+        default: 'b9967'
+        type: string
+      runner:
+        description: 'ARM runner image (24.04: glibc 2.39 floor; 22.04: glibc 2.35)'
+        required: true
+        default: 'ubuntu-24.04-arm'
+        type: choice
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-22.04-arm
+      publish:
+        description: 'Create or update the <tag>-linux-arm64 release in this repo (never for main)'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-arm64-appimage-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    outputs:
+      layout: ${{ steps.info.outputs.layout }}
+      version: ${{ steps.info.outputs.version }}
+      sha: ${{ steps.info.outputs.sha }}
+    steps:
+      - name: Validate inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          LLAMA_TAG: ${{ inputs.llama_cpp_tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?|main)$ ]]; then
+            echo "::error::tag must be vX.Y.Z[-suffix] or main, got '$TAG'"
+            exit 1
+          fi
+          if ! [[ "$LLAMA_TAG" =~ ^b[0-9]+$ ]]; then
+            echo "::error::llama_cpp_tag must look like b1234, got '$LLAMA_TAG'"
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.tag }}
+          path: jan
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Detect layout and version
+        id: info
+        run: |
+          if [ -f jan/src-tauri/build-utils/engine-prebuilt.sh ] || grep -q '^build-engine:' jan/Makefile; then
+            layout=engine
+          else
+            layout=runtime-backend
+          fi
+          version=$(jq -r .version jan/src-tauri/tauri.conf.json)
+          sha=$(git -C jan rev-parse HEAD)
+          echo "layout=$layout version=$version sha=$sha"
+          {
+            echo "layout=$layout"
+            echo "version=$version"
+            echo "sha=$sha"
+          } >>"$GITHUB_OUTPUT"
+
+  llama-backend:
+    needs: prepare
+    if: needs.prepare.outputs.layout == 'runtime-backend'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out the build scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: scripts/linux-arm64
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build file
+
+      - name: Build llama.cpp backend
+        env:
+          LLAMA_TAG: ${{ inputs.llama_cpp_tag }}
+        run: '"$GITHUB_WORKSPACE/ci/scripts/linux-arm64/build-llama-backend.sh" "$LLAMA_TAG" "$RUNNER_TEMP/llama-out"'
+
+      - name: Upload backend
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-backend
+          path: ${{ runner.temp }}/llama-out/
+          if-no-files-found: error
+
+  appimage:
+    needs: prepare
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 150
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.tag }}
+          path: jan
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the build scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: scripts/linux-arm64
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/lib/android/sdk/ndk || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo apt-get clean || true
+          df -h
+
+      - name: Install node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: jan/src-tauri -> target
+          key: ${{ needs.prepare.outputs.sha }}
+
+      - name: Install Tauri dependencies
+        run: |
+          # 24.04 renamed libfuse2 to libfuse2t64.
+          if [ "$(. /etc/os-release && echo "$VERSION_ID")" = "22.04" ]; then fuse=libfuse2; else fuse=libfuse2t64; fi
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libatk1.0-dev libpango1.0-dev libgtk-3-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev librsvg2-dev "$fuse" libayatana-appindicator3-dev \
+            xdg-utils pkg-config file desktop-file-utils patchelf cmake ninja-build
+
+      - name: Check the build is native arm64
+        run: |
+          # Sidecar names and downloads follow the host arch (os.arch()).
+          if [ "$(uname -m)" != "aarch64" ] || [ "$(node -p process.arch)" != "arm64" ]; then
+            echo "::error::expected a native arm64 host, got uname $(uname -m), node $(node -p process.arch)"
+            exit 1
+          fi
+
+      - name: Retarget the Linux build to aarch64
+        run: '"$GITHUB_WORKSPACE/ci/scripts/linux-arm64/retarget-sources.sh" "$GITHUB_WORKSPACE/jan"'
+
+      - name: Config yarn
+        working-directory: jan
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.3 --activate
+          yarn --version
+          yarn config set -H enableImmutableInstalls false
+
+      - name: Build app
+        working-directory: jan
+        env:
+          RELEASE_CHANNEL: stable
+          AUTO_UPDATER_DISABLED: 'true'
+          TAURI_TRAY: ayatana
+          # linuxdeploy and appimagetool are AppImages; run them without FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: '1'
+          # Only read by releases with the compiled-in engine.
+          JAN_ENGINE_VARIANT: cpu
+          CI: 'true'
+        run: make build
+
+      - name: Verify bundle
+        id: bundle
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          LAYOUT: ${{ needs.prepare.outputs.layout }}
+        run: '"$GITHUB_WORKSPACE/ci/scripts/linux-arm64/verify-bundle.sh" "$GITHUB_WORKSPACE/jan" "$VERSION" "$LAYOUT" "$RUNNER_TEMP/dist"'
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appimage
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+      - name: Upload build debug files
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appimage-debug
+          path: |
+            jan/src-tauri/target/release/bundle/appimage/
+            !jan/src-tauri/target/release/bundle/appimage/*.AppDir/
+            jan/**/*.log
+            !jan/**/node_modules/**
+          retention-days: 5
+          if-no-files-found: ignore
+
+  smoke:
+    needs: [prepare, appimage, llama-backend]
+    if: ${{ !cancelled() && needs.appimage.result == 'success' && (needs.llama-backend.result == 'success' || needs.llama-backend.result == 'skipped') }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out the build scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: scripts/linux-arm64
+          persist-credentials: false
+
+      - name: Install runtime test tools
+        run: |
+          # Deliberately no -dev packages: a library only the build host had must fail here.
+          if [ "$(. /etc/os-release && echo "$VERSION_ID")" = "22.04" ]; then fuse=libfuse2; else fuse=libfuse2t64; fi
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth file "$fuse"
+
+      - name: Download AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: appimage
+          path: ${{ runner.temp }}/dist
+
+      - name: Download backend
+        if: needs.prepare.outputs.layout == 'runtime-backend'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-backend
+          path: ${{ runner.temp }}/llama-out
+
+      - name: Smoke-test the AppImage
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: '"$GITHUB_WORKSPACE/ci/scripts/linux-arm64/smoke-appimage.sh" "$RUNNER_TEMP/dist/Jan_${VERSION}_aarch64.AppImage" "$VERSION"'
+
+      - name: Smoke-test the backend
+        if: needs.prepare.outputs.layout == 'runtime-backend'
+        env:
+          LLAMA_TAG: ${{ inputs.llama_cpp_tag }}
+        run: '"$GITHUB_WORKSPACE/ci/scripts/linux-arm64/smoke-backend.sh" "$RUNNER_TEMP/llama-out/llama-${LLAMA_TAG}-bin-linux-arm64.tar.gz" "$LLAMA_TAG"'
+
+      - name: Upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-logs
+          path: |
+            ${{ runner.temp }}/smoke/*.log
+            ${{ runner.temp }}/smoke/home/.local/share/Jan/data/logs/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  release:
+    needs: [prepare, appimage, llama-backend, smoke]
+    # !cancelled() keeps a skipped llama-backend (engine layout) from skipping this job.
+    if: ${{ !cancelled() && inputs.publish && inputs.tag != 'main' && needs.smoke.result == 'success' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: appimage
+          path: dist
+
+      - name: Download backend
+        if: needs.prepare.outputs.layout == 'runtime-backend'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-backend
+          path: dist
+
+      - name: Write release notes
+        env:
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          LAYOUT: ${{ needs.prepare.outputs.layout }}
+          LLAMA_TAG: ${{ inputs.llama_cpp_tag }}
+          RUNNER: ${{ inputs.runner }}
+        run: |
+          if [ "$RUNNER" = "ubuntu-22.04-arm" ]; then floor="Ubuntu 22.04 / Debian 12"; else floor="Ubuntu 24.04 / Debian 13"; fi
+          {
+            echo "Unofficial Linux arm64 (aarch64) build of Jan $VERSION, built from upstream tag \`$TAG\` at commit \`$SHA\` on \`$RUNNER\`."
+            echo
+            echo "CPU only. Unsigned, and auto-update is off: to update, download a newer build from this repo. Needs $floor or newer."
+            echo
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "chmod +x Jan_${VERSION}_aarch64.AppImage"
+            echo "./Jan_${VERSION}_aarch64.AppImage"
+            echo '```'
+            if [ "$LAYOUT" = "runtime-backend" ]; then
+              echo
+              echo "Jan $VERSION downloads its llama.cpp backend at runtime, and upstream publishes none for Linux arm64. Install the one built here, once:"
+              echo
+              echo "1. Download \`llama-${LLAMA_TAG}-bin-linux-arm64.tar.gz\` from this release."
+              echo "2. In Jan: **Settings → llama.cpp → Install backend from file**, and pick that file."
+              echo "3. Jan selects the \`linux-arm64\` backend; download a model and run it."
+            fi
+            echo
+            echo "Each file has a \`.sha256\` beside it: \`sha256sum -c <file>.sha256\`."
+          } >"$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ inputs.tag }}-linux-arm64
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          name: Jan ${{ needs.prepare.outputs.version }} — Linux arm64 (unofficial)
+          body_path: ${{ runner.temp }}/notes.md
+          prerelease: false
+          make_latest: false
+          # A rerun for the same tag updates this release and replaces same-named assets.
+          overwrite_files: true
+          files: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.sha256
