@@ -114,25 +114,31 @@ if [ "${VERSION_OUT[jan-cli]}" = "FAILED" ] || ! grep -qF -- "$VERSION" <<<"${VE
 fi
 
 # The app's own structured log records ([YYYY-MM-DD][HH:MM:SS][module][LEVEL] ...)
-# can legitimately report a missing shared library, e.g. the optional NVIDIA
-# probe's "libnvidia-ml.so: cannot open shared object file" on a host with no
-# NVIDIA card. The loader patterns below must not fire on those records; they
-# still apply to every other line, including the dynamic loader's own stderr
-# and libepoxy's "Couldn't open libGLESv2.so.2: ... cannot open shared object".
-APP_RECORD_RE='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}\]\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\['
+# can legitimately report a missing shared library at DEBUG or TRACE level,
+# e.g. the optional NVIDIA probe's "libnvidia-ml.so: cannot open shared
+# object file" on a host with no NVIDIA card (always [DEBUG] in practice).
+# The loader patterns below must not fire on those records; they still apply
+# to every other line, including the same module logging at INFO/WARN/ERROR
+# (a real failure, not a probe), the dynamic loader's own stderr, and
+# libepoxy's "Couldn't open libGLESv2.so.2: ... cannot open shared object".
+# The module field (third bracket) never contains ']', confirmed from the
+# run logs.
+APP_DEBUG_RECORD_RE='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}\]\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\[[^]]*\]\[(DEBUG|TRACE)\]'
 
 # has_crash <log>: true if the log shows a loader error, panic or crash.
 has_crash() {
   local log=$1 non_record
   # Panics and segfaults are fatal wherever they appear, app records included.
-  if grep -Eq 'panicked at|Segmentation fault' "$log"; then
+  if LC_ALL=C grep -aEq 'panicked at|Segmentation fault' "$log"; then
     return 0
   fi
   # Captured rather than piped: under pipefail, grep -Eq exiting on its first
   # match (with more input still queued) would SIGPIPE the producer side of a
-  # pipe, and that 141 would read as "no crash" here.
-  non_record=$(grep -Ev "$APP_RECORD_RE" "$log" || true)
-  grep -Eq 'error while loading shared libraries|cannot open shared object' <<<"$non_record"
+  # pipe, and that 141 would read as "no crash" here. LC_ALL=C and -a: a NUL
+  # byte or invalid UTF-8 would otherwise make grep treat the log as binary
+  # and silently stop, or drop lines, under a UTF-8 locale.
+  non_record=$(LC_ALL=C grep -avE "$APP_DEBUG_RECORD_RE" "$log" || true)
+  LC_ALL=C grep -aEq 'error while loading shared libraries|cannot open shared object' <<<"$non_record"
 }
 
 # launch <label> <command...>: passes if the app outlives the timeout cleanly.

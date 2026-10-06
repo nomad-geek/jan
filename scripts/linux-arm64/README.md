@@ -175,12 +175,14 @@ the GL stack (`libegl1`, `libgles2`, `libgl1`, `libgl1-mesa-dri`), and
     AppImage's FUSE runtime, creates its data directory, and its log holds no
     loader error, panic or crash. The two loader-error patterns are not
     applied to the app's own structured log records (lines starting
-    `[YYYY-MM-DD][HH:MM:SS][...`), because the app's optional hardware probes
-    log a missing library there on a host without it (e.g. no NVIDIA card) —
-    that's expected, not a crash. A panic or segfault still fails the test
-    wherever it appears, records included, and every other line (the dynamic
-    loader's own stderr, libepoxy's `dlopen` failures) is still checked for
-    loader errors too.
+    `[YYYY-MM-DD][HH:MM:SS][module][...`) at `DEBUG` or `TRACE` level,
+    because the app's optional hardware probes log a missing library there,
+    at that level, on a host without the hardware (e.g. no NVIDIA card) —
+    that's expected, not a crash. The same module logging a loader error at
+    `INFO`, `WARN` or `ERROR` is a real failure and still fails the test, as
+    does a panic or segfault wherever it appears, records included; every
+    other line (the dynamic loader's own stderr, libepoxy's `dlopen`
+    failures) is still checked for loader errors too.
 - `smoke-backend.sh` checks the backend file name against Jan's own pattern. It
   unpacks the archive into the layout Jan installs to and checks that
   `llama-server` resolves its libraries through its own rpath. It checks that
