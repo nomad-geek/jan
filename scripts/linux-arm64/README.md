@@ -135,21 +135,27 @@ the host:
 - glibc (`libc`, `libm`, `libdl`, `libpthread`, `libresolv`), `libgcc_s` and
   `libstdc++`;
 - the GL stack: `libEGL.so.1`, `libGL.so.1`, `libGLX`, `libGLdispatch`,
-  `libgbm`, `libdrm` (Ubuntu packages `libegl1`, `libgl1`, `libgbm1`,
-  `libdrm2`). It is left out on purpose, because it must match the host's GPU
-  driver;
+  `libGLESv2.so.2`, `libgbm`, `libdrm` (Ubuntu packages `libegl1`, `libgl1`,
+  `libgles2`, `libgbm1`, `libdrm2`). It is left out on purpose, because it
+  must match the host's GPU driver. WebKitGTK, through libepoxy, loads
+  `libGLESv2.so.2` with `dlopen` rather than linking it, so a missing copy
+  does not show up as an unresolved symbol in `ldd` — it only aborts at
+  runtime;
 - X11 and Wayland client libraries (`libX11`, `libX11-xcb`, `libxcb`,
   `libwayland-client`), `fontconfig`, `freetype`, `harfbuzz`, `fribidi`,
   `expat`, `zlib`, `libgpg-error`, `libcom_err`.
 
 Every desktop install has these. A minimal server or container image may lack
-the GL stack: there, `sudo apt install libegl1 libgl1` (Ubuntu/Debian).
+the GL stack: there, `sudo apt install libegl1 libgles2 libgl1` (Ubuntu/Debian).
+A host with no GPU driver also needs `libgl1-mesa-dri` for Mesa's software
+(llvmpipe) renderer.
 
 ## Smoke tests
 
 The `smoke` job runs on a fresh runner without the build's `-dev` packages. It
 installs only what a desktop has and a bare runner image lacks: Xvfb, FUSE, and
-`libegl1` (see Host libraries):
+the GL stack (`libegl1`, `libgles2`, `libgl1`, `libgl1-mesa-dri`; see Host
+libraries):
 
 - `smoke-appimage.sh` extracts the AppImage and checks the following:
   - `Jan`, `jan-cli`, `uv` and `bun` are aarch64, and every shared library they
