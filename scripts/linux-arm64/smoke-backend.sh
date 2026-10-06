@@ -4,17 +4,21 @@
 # Checks that the file name is one Jan's "Install backend from file" accepts
 # (as version <tag>, backend linux-arm64), unpacks it into the layout Jan
 # installs backends into, checks that llama-server resolves its libraries
-# through its own rpath, then serves a tiny model and generates tokens.
+# through its own rpath, then serves a tiny model and generates tokens. Given
+# the build's llama-variants.txt, it also checks that the archive holds exactly
+# those CPU variant modules, each resolving its libraries, and reports which
+# one the runner's CPU got.
 #
-# Usage: smoke-backend.sh <tarball> <llama-tag>
+# Usage: smoke-backend.sh <tarball> <llama-tag> [<llama-variants.txt>]
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: $0 <tarball> <llama-tag>" >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+  echo "usage: $0 <tarball> <llama-tag> [<llama-variants.txt>]" >&2
   exit 2
 fi
 TARBALL=$(realpath "$1")
 TAG=$2
+VARIANTS_FILE=${3:+$(realpath "$3")}
 
 SMOKE=${RUNNER_TEMP:-$(mktemp -d)}/smoke
 mkdir -p "$SMOKE/home"
@@ -62,6 +66,30 @@ if grep -q 'not found' <<<"$ldd_out"; then
 fi
 env -u LD_LIBRARY_PATH "$SERVER" --version
 
+# 3b. The CPU variant modules: exactly the ones the build declared, and each
+#     resolves its own libraries (they are dlopen()ed, so ldd above misses them).
+BIN_DIR="$BACKEND_DIR/build/bin"
+built=$(cd "$BIN_DIR" && find . -maxdepth 1 -name 'libggml-cpu*.so' -printf '%f\n' | sort)
+if [ -z "$built" ]; then
+  echo "::error::no libggml-cpu*.so CPU backend in the archive"
+  exit 1
+fi
+if [ -n "$VARIANTS_FILE" ]; then
+  expected=$(sed 's/.*/libggml-cpu-&.so/' "$VARIANTS_FILE" | sort)
+  if [ "$expected" != "$built" ]; then
+    diff <(echo "$expected") <(echo "$built") || true
+    echo "::error::the archive's CPU variant modules do not match llama-variants.txt"
+    exit 1
+  fi
+fi
+echo "CPU variant modules: $(echo "$built" | paste -sd' ')"
+while IFS= read -r lib; do
+  if env -u LD_LIBRARY_PATH ldd "$BIN_DIR/$lib" | grep 'not found'; then
+    echo "::error::$lib has unresolved libraries"
+    exit 1
+  fi
+done <<<"$built"
+
 # 4. Real inference with a 19 MB model.
 curl -fsSL --retry 3 -o stories15M-q4_0.gguf "$MODEL_URL"
 echo "$MODEL_SHA256  stories15M-q4_0.gguf" | sha256sum -c - || {
@@ -103,4 +131,14 @@ echo "completion: Once upon a time$content"
 
 echo "CPU backend selected:"
 grep -Ei 'load_backend|ggml_cpu|CPU :' llama-server.log | head -n 10 || true
+loaded=$(sed -nE '/load_backend: loaded CPU backend from /{s/.*\/(libggml-cpu[^/]*\.so).*/\1/p;q}' llama-server.log)
+# It goes to stdout and the job summary; accept only a variant module name.
+if [[ "$loaded" =~ ^libggml-cpu-armv[0-9]+\.[0-9]+_[0-9]+\.so$ ]]; then
+  echo "runner CPU ($(uname -m), $(grep -m1 -oE 'CPU part\s*:\s*0x[0-9a-f]+' /proc/cpuinfo || echo 'part unknown')) used $loaded"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    echo "Backend smoke test: the runner's CPU loaded \`$loaded\` of \`$(echo "$built" | paste -sd' ')\`" >>"$GITHUB_STEP_SUMMARY"
+  fi
+else
+  echo "::warning::llama-server.log names no loaded CPU variant module"
+fi
 echo "backend smoke test passed"

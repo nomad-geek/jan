@@ -85,10 +85,26 @@ assets come from, and the release carries it as
 3. Jan installs it as version `b9967`, backend `linux-arm64`, and selects it.
 
 Keep the file name as it is: Jan reads the version and backend from it. The
-backend carries every ARM CPU variant ggml has, and picks the best one for the
-CPU at runtime. If that build fails on the runner's compiler, the script falls
-back to a single `armv8.2-a+dotprod+fp16` backend, which still covers Ampere,
-Graviton 2+ and Snapdragon X. The run then shows a warning.
+backend carries every ARM CPU variant ggml has (`GGML_CPU_ALL_VARIANTS`), from
+plain `armv8.0` up to `armv9.2` with SVE2 and SME, and picks the best one for
+the CPU at runtime. The release notes list the variants it carries.
+
+All variants must build: there is no single-variant fallback, so a toolchain
+problem fails the `llama-backend` job instead of quietly shipping a smaller
+backend. The SME variants (`armv9.2_1`, `armv9.2_2`) need GCC 14, since GCC 13,
+the default on `ubuntu-24.04-arm`, rejects `-march=...+sme`. The job therefore
+builds with `gcc-14` from the Ubuntu 24.04 archive. It links against the
+`libstdc++` and `libgomp` that 24.04 already ships, so the backend needs nothing
+newer than the AppImage does. Before compiling, `build-llama-backend.sh` checks
+that the compiler accepts every variant's `-march`. After it, it checks that
+every variant's module is in the archive. It writes the list to
+`llama-variants.txt`.
+
+On `ubuntu-22.04-arm` no archive compiler knows `+sme`, so that runner leaves out
+the two SME variants by name (`SKIP_ARM_VARIANTS`). The job summary and the
+release notes then show 6 variants instead of 8. A CPU with SME then gets the
+best non-SME variant it supports: `armv8.6_2` on SVE2 cores, an `armv8.2`
+variant on an SME core without SVE.
 
 Releases after 0.8.x compile the engine into the app. For those the workflow
 detects the layout, builds the engine CPU-only (`JAN_ENGINE_VARIANT=cpu`) and
@@ -98,8 +114,8 @@ skips the separate backend.
 
 - **Oldest distro.** Built on `ubuntu-24.04-arm`, the AppImage needs glibc 2.39:
   Ubuntu 24.04+, Debian 13+. The `ubuntu-22.04-arm` runner gives a glibc 2.35
-  floor (Ubuntu 22.04+, Debian 12+). Its older compiler is more likely to need
-  the backend fallback above.
+  floor (Ubuntu 22.04+, Debian 12+). Its backend leaves out the two SME
+  variants (above).
 - **No auto-update.** To update, rerun the workflow for the new upstream tag,
   and download the new AppImage.
 - **Unsigned.** There is no updater signature, and no upstream signing key.
@@ -109,9 +125,31 @@ skips the separate backend.
 - **Only the AppImage is published.** Tauri also builds a `.deb`, which is
   neither tested nor shipped.
 
+## Host libraries
+
+Like any AppImage, the bundle leaves out the libraries every desktop already
+has. linuxdeploy follows the AppImage excludelist for this, and the x86_64 Jan
+AppImage relies on the same host copies. On arm64 the app expects these from
+the host:
+
+- glibc (`libc`, `libm`, `libdl`, `libpthread`, `libresolv`), `libgcc_s` and
+  `libstdc++`;
+- the GL stack: `libEGL.so.1`, `libGL.so.1`, `libGLX`, `libGLdispatch`,
+  `libgbm`, `libdrm` (Ubuntu packages `libegl1`, `libgl1`, `libgbm1`,
+  `libdrm2`). It is left out on purpose, because it must match the host's GPU
+  driver;
+- X11 and Wayland client libraries (`libX11`, `libX11-xcb`, `libxcb`,
+  `libwayland-client`), `fontconfig`, `freetype`, `harfbuzz`, `fribidi`,
+  `expat`, `zlib`, `libgpg-error`, `libcom_err`.
+
+Every desktop install has these. A minimal server or container image may lack
+the GL stack: there, `sudo apt install libegl1 libgl1` (Ubuntu/Debian).
+
 ## Smoke tests
 
-The `smoke` job runs on a fresh runner without the build's `-dev` packages:
+The `smoke` job runs on a fresh runner without the build's `-dev` packages. It
+installs only what a desktop has and a bare runner image lacks: Xvfb, FUSE, and
+`libegl1` (see Host libraries):
 
 - `smoke-appimage.sh` extracts the AppImage and checks the following:
   - `Jan`, `jan-cli`, `uv` and `bun` are aarch64, and every shared library they
@@ -121,9 +159,11 @@ The `smoke` job runs on a fresh runner without the build's `-dev` packages:
     AppImage's FUSE runtime, and creates its data directory.
 - `smoke-backend.sh` checks the backend file name against Jan's own pattern. It
   unpacks the archive into the layout Jan installs to and checks that
-  `llama-server` resolves its libraries through its own rpath. It then serves a
-  15M-parameter model (19 MB, pinned to a Hugging Face commit and checked by
-  sha256) and generates tokens.
+  `llama-server` resolves its libraries through its own rpath. It checks that
+  the archive holds exactly the CPU variant modules in `llama-variants.txt`,
+  and that each resolves its libraries. It then serves a 15M-parameter model
+  (19 MB, pinned to a Hugging Face commit and checked by sha256), generates
+  tokens, and reports which variant the runner's CPU loaded.
 
 On failure the job uploads the logs as the `smoke-logs` artifact. A failed build
 uploads `appimage-debug`.
@@ -133,7 +173,7 @@ uploads `appimage-debug`.
 | File | Purpose |
 |---|---|
 | `retarget-sources.sh` | Rewrites the three x86_64 pins in the checked-out tag |
-| `build-llama-backend.sh` | Builds `janhq/llama.cpp` as `llama-<tag>-bin-linux-arm64.tar.gz` |
+| `build-llama-backend.sh` | Builds `janhq/llama.cpp` as `llama-<tag>-bin-linux-arm64.tar.gz`, with every ARM CPU variant |
 | `verify-bundle.sh` | Checks the built bundle and names the AppImage `Jan_<version>_aarch64.AppImage` |
 | `smoke-appimage.sh` | AppImage smoke test |
 | `smoke-backend.sh` | Backend smoke test with real inference |
