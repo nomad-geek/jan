@@ -134,16 +134,26 @@ the host:
 
 - glibc (`libc`, `libm`, `libdl`, `libpthread`, `libresolv`), `libgcc_s` and
   `libstdc++`;
-- the GL stack: `libEGL.so.1`, `libGL.so.1`, `libGLX`, `libGLdispatch`,
-  `libGLESv2.so.2`, `libgbm`, `libdrm` (Ubuntu packages `libegl1`, `libgl1`,
-  `libgles2`, `libgbm1`, `libdrm2`). It is left out on purpose, because it
-  must match the host's GPU driver. WebKitGTK, through libepoxy, loads
-  `libGLESv2.so.2` with `dlopen` rather than linking it, so a missing copy
-  does not show up as an unresolved symbol in `ldd` — it only aborts at
-  runtime;
+- the GL stack covered by linuxdeploy's excludelist: `libGL`, `libEGL`,
+  `libGLdispatch`, `libGLX`, `libOpenGL`, `libglapi`, `libgbm`, `libdrm`,
+  `libwayland-client`, `libX11-xcb` and `libxcb` (Ubuntu packages `libegl1`,
+  `libgl1`, `libgbm1`, `libdrm2`). linuxdeploy drops these on purpose, because
+  they must match the host's GPU driver and display server;
+- `libGLESv2.so.2` (Ubuntu package `libgles2`). This one is **not** on the
+  excludelist, and linuxdeploy never had a copy to bundle in the first place:
+  WebKitGTK, through libepoxy, loads it with `dlopen` rather than linking
+  against it, and linuxdeploy only follows an AppImage's direct link
+  dependencies, not dlopen targets. A missing copy does not show up as an
+  unresolved symbol in `ldd` — it only aborts at runtime with "Couldn't open
+  libGLESv2.so.2 ...";
 - X11 and Wayland client libraries (`libX11`, `libX11-xcb`, `libxcb`,
   `libwayland-client`), `fontconfig`, `freetype`, `harfbuzz`, `fribidi`,
-  `expat`, `zlib`, `libgpg-error`, `libcom_err`.
+  `expat`, `zlib`, `libgpg-error`, `libcom_err`;
+- GStreamer base plugins (Ubuntu package `gstreamer1.0-plugins-base`), for the
+  `appsink`/`appsrc` elements WebKitGTK's media pipeline needs. Not an
+  AppImage library at all — WebKitGTK finds GStreamer plugins on the host's
+  plugin path at runtime — but the same "every desktop has it, a bare runner
+  image does not" story.
 
 Every desktop install has these. A minimal server or container image may lack
 the GL stack: there, `sudo apt install libegl1 libgles2 libgl1` (Ubuntu/Debian).
@@ -153,16 +163,24 @@ A host with no GPU driver also needs `libgl1-mesa-dri` for Mesa's software
 ## Smoke tests
 
 The `smoke` job runs on a fresh runner without the build's `-dev` packages. It
-installs only what a desktop has and a bare runner image lacks: Xvfb, FUSE, and
-the GL stack (`libegl1`, `libgles2`, `libgl1`, `libgl1-mesa-dri`; see Host
-libraries):
+installs only what a desktop has and a bare runner image lacks: Xvfb, FUSE,
+the GL stack (`libegl1`, `libgles2`, `libgl1`, `libgl1-mesa-dri`), and
+`gstreamer1.0-plugins-base` (see Host libraries):
 
 - `smoke-appimage.sh` extracts the AppImage and checks the following:
   - `Jan`, `jan-cli`, `uv` and `bun` are aarch64, and every shared library they
     need resolves;
   - `jan-cli --version` reports the tag's version;
   - the app stays up for 60 s under Xvfb, both extracted and through the
-    AppImage's FUSE runtime, and creates its data directory.
+    AppImage's FUSE runtime, creates its data directory, and its log holds no
+    loader error, panic or crash. The two loader-error patterns are not
+    applied to the app's own structured log records (lines starting
+    `[YYYY-MM-DD][HH:MM:SS][...`), because the app's optional hardware probes
+    log a missing library there on a host without it (e.g. no NVIDIA card) —
+    that's expected, not a crash. A panic or segfault still fails the test
+    wherever it appears, records included, and every other line (the dynamic
+    loader's own stderr, libepoxy's `dlopen` failures) is still checked for
+    loader errors too.
 - `smoke-backend.sh` checks the backend file name against Jan's own pattern. It
   unpacks the archive into the layout Jan installs to and checks that
   `llama-server` resolves its libraries through its own rpath. It checks that

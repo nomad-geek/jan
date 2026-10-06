@@ -113,6 +113,24 @@ if [ "${VERSION_OUT[jan-cli]}" = "FAILED" ] || ! grep -qF -- "$VERSION" <<<"${VE
   fail "jan-cli --version is '${VERSION_OUT[jan-cli]}', expected it to contain $VERSION"
 fi
 
+# The app's own structured log records ([YYYY-MM-DD][HH:MM:SS][module][LEVEL] ...)
+# can legitimately report a missing shared library, e.g. the optional NVIDIA
+# probe's "libnvidia-ml.so: cannot open shared object file" on a host with no
+# NVIDIA card. The loader patterns below must not fire on those records; they
+# still apply to every other line, including the dynamic loader's own stderr
+# and libepoxy's "Couldn't open libGLESv2.so.2: ... cannot open shared object".
+APP_RECORD_RE='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}\]\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\['
+
+# has_crash <log>: true if the log shows a loader error, panic or crash.
+has_crash() {
+  local log=$1
+  # Panics and segfaults are fatal wherever they appear, app records included.
+  if grep -Eq 'panicked at|Segmentation fault' "$log"; then
+    return 0
+  fi
+  grep -Ev "$APP_RECORD_RE" "$log" | grep -Eq 'error while loading shared libraries|cannot open shared object'
+}
+
 # launch <label> <command...>: passes if the app outlives the timeout cleanly.
 launch() {
   local label=$1 log="$SMOKE/gui-$1.log" code=0
@@ -129,7 +147,7 @@ launch() {
   if [ "$code" -ne 124 ] && [ "$code" -ne 137 ]; then
     fail "GUI launch ($label) exited with $code before the ${LAUNCH_SECONDS}s timeout"
   fi
-  if grep -Eq 'error while loading shared libraries|panicked at|Segmentation fault|cannot open shared object' "$log"; then
+  if has_crash "$log"; then
     fail "GUI launch ($label) log shows a loader error, panic or crash"
   fi
 }
