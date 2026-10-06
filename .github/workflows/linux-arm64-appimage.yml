@@ -291,10 +291,13 @@ jobs:
             fuse=libfuse2t64 fusermount_pkg=fuse3
           fi
           sudo apt-get update
-          # libegl1: the AppImage leaves the GL stack (libEGL, libGL, libgbm,
-          # libdrm) to the host, as AppImages do; every desktop has it, a bare
-          # runner image does not. See "Host libraries" in the README.
-          sudo apt-get install -y xvfb xauth file "$fuse" libegl1
+          # libegl1, libgles2, libgl1, libgl1-mesa-dri: the AppImage leaves the
+          # GL stack to the host, as AppImages do; every desktop has it, a bare
+          # runner image does not. libgles2 is loaded at runtime with dlopen
+          # (by WebKitGTK through libepoxy), not linked, so ldd does not catch
+          # a missing copy. libgl1-mesa-dri gives Xvfb a software (llvmpipe)
+          # renderer. See "Host libraries" in the README.
+          sudo apt-get install -y xvfb xauth file "$fuse" libegl1 libgles2 libgl1 libgl1-mesa-dri
           # libfuse2(t64) ships no fusermount; the FUSE launch needs one. Only
           # install it when missing: fuse and fuse3 conflict on 22.04.
           if ! command -v fusermount >/dev/null && ! command -v fusermount3 >/dev/null; then
