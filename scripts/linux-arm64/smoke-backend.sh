@@ -83,12 +83,12 @@ if [ -n "$VARIANTS_FILE" ]; then
   fi
 fi
 echo "CPU variant modules: $(echo "$built" | paste -sd' ')"
-for lib in $built; do
+while IFS= read -r lib; do
   if env -u LD_LIBRARY_PATH ldd "$BIN_DIR/$lib" | grep 'not found'; then
     echo "::error::$lib has unresolved libraries"
     exit 1
   fi
-done
+done <<<"$built"
 
 # 4. Real inference with a 19 MB model.
 curl -fsSL --retry 3 -o stories15M-q4_0.gguf "$MODEL_URL"
@@ -131,13 +131,14 @@ echo "completion: Once upon a time$content"
 
 echo "CPU backend selected:"
 grep -Ei 'load_backend|ggml_cpu|CPU :' llama-server.log | head -n 10 || true
-loaded=$(sed -nE 's/.*load_backend: loaded CPU backend from .*\/(libggml-cpu[^/]*\.so).*/\1/p' llama-server.log | head -n 1)
-if [ -n "$loaded" ]; then
+loaded=$(sed -nE '/load_backend: loaded CPU backend from /{s/.*\/(libggml-cpu[^/]*\.so).*/\1/p;q}' llama-server.log)
+# It goes to stdout and the job summary; accept only a variant module name.
+if [[ "$loaded" =~ ^libggml-cpu-armv[0-9]+\.[0-9]+_[0-9]+\.so$ ]]; then
   echo "runner CPU ($(uname -m), $(grep -m1 -oE 'CPU part\s*:\s*0x[0-9a-f]+' /proc/cpuinfo || echo 'part unknown')) used $loaded"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "Backend smoke test: the runner's CPU loaded \`$loaded\` of \`$(echo "$built" | paste -sd' ')\`" >>"$GITHUB_STEP_SUMMARY"
   fi
 else
-  echo "::warning::llama-server.log names no loaded CPU backend module"
+  echo "::warning::llama-server.log names no loaded CPU variant module"
 fi
 echo "backend smoke test passed"

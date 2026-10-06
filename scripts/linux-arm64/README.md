@@ -102,8 +102,9 @@ every variant's module is in the archive. It writes the list to
 
 On `ubuntu-22.04-arm` no archive compiler knows `+sme`, so that runner leaves out
 the two SME variants by name (`SKIP_ARM_VARIANTS`). The job summary and the
-release notes then show 6 variants instead of 8. CPUs with SME use the
-`armv8.6_2` (SVE2) variant instead.
+release notes then show 6 variants instead of 8. A CPU with SME then gets the
+best non-SME variant it supports: `armv8.6_2` on SVE2 cores, an `armv8.2`
+variant on an SME core without SVE.
 
 Releases after 0.8.x compile the engine into the app. For those the workflow
 detects the layout, builds the engine CPU-only (`JAN_ENGINE_VARIANT=cpu`) and

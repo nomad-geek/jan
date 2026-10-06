@@ -52,8 +52,12 @@ SRC="$WORK/llama.cpp"
 ASSET="llama-$TAG-bin-linux-arm64.tar.gz"
 
 rm -rf "$SRC"
-git clone --depth 1 --branch "$TAG" https://github.com/janhq/llama.cpp.git "$SRC"
+# Fetch the tag ref itself: clone --branch would prefer a branch of that name.
+git init -q "$SRC"
 cd "$SRC"
+git remote add origin https://github.com/janhq/llama.cpp.git
+git fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
+git -c advice.detachedHead=false checkout -q "refs/tags/$TAG"
 # The tag is mutable; record the commit actually built, for the release notes.
 COMMIT=$(git rev-parse HEAD)
 echo "llama.cpp $TAG at $COMMIT"
@@ -104,11 +108,15 @@ for line in "${VARIANT_LINES[@]}"; do
     echo "error: unexpected CPU variant name '$v' in the configure output" >&2
     exit 1
   fi
-  if ! "$CC" "$march" -c "$probe/p.c" -o "$probe/p.o" 2>"$probe/err"; then
-    cat "$probe/err" >&2
-    echo "::error::$CC rejects $march for CPU variant $v; build with a newer compiler (CC/CXX) or leave it out with SKIP_ARM_VARIANTS"
-    exit 1
-  fi
+  for lang in c c++; do
+    compiler=$CC
+    [ "$lang" = c++ ] && compiler=$CXX
+    if ! "$compiler" -x "$lang" "$march" -c "$probe/p.c" -o "$probe/p.o" 2>"$probe/err"; then
+      cat "$probe/err" >&2
+      echo "::error::$compiler rejects $march for CPU variant $v; build with a newer compiler (CC/CXX) or leave it out with SKIP_ARM_VARIANTS"
+      exit 1
+    fi
+  done
   VARIANTS+=("$v")
 done
 rm -rf "$probe"
@@ -128,7 +136,9 @@ done
 echo "build/bin:"
 ls -l build/bin
 
-file build/bin/llama-server | tee /dev/stderr | grep -q 'ARM aarch64' || {
+server_type=$(file build/bin/llama-server)
+echo "$server_type"
+grep -q 'ARM aarch64' <<<"$server_type" || {
   echo "error: build/bin/llama-server is not an aarch64 binary" >&2
   exit 1
 }
@@ -149,8 +159,9 @@ readelf -d build/bin/llama-server | grep -E 'R(UN)?PATH' | grep -qF '$ORIGIN' ||
 mkdir -p "$OUT_DIR"
 OUT_DIR=$(cd "$OUT_DIR" && pwd)
 tar -czf "$OUT_DIR/$ASSET" build/bin
+archived=$(tar -tzf "$OUT_DIR/$ASSET")
 for v in "${VARIANTS[@]}"; do
-  tar -tzf "$OUT_DIR/$ASSET" | grep -qx "build/bin/libggml-cpu-$v.so" || {
+  grep -qx "build/bin/libggml-cpu-$v.so" <<<"$archived" || {
     echo "error: $ASSET lacks build/bin/libggml-cpu-$v.so" >&2
     exit 1
   }
