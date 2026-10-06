@@ -123,12 +123,16 @@ APP_RECORD_RE='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}\]\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\['
 
 # has_crash <log>: true if the log shows a loader error, panic or crash.
 has_crash() {
-  local log=$1
+  local log=$1 non_record
   # Panics and segfaults are fatal wherever they appear, app records included.
   if grep -Eq 'panicked at|Segmentation fault' "$log"; then
     return 0
   fi
-  grep -Ev "$APP_RECORD_RE" "$log" | grep -Eq 'error while loading shared libraries|cannot open shared object'
+  # Captured rather than piped: under pipefail, grep -Eq exiting on its first
+  # match (with more input still queued) would SIGPIPE the producer side of a
+  # pipe, and that 141 would read as "no crash" here.
+  non_record=$(grep -Ev "$APP_RECORD_RE" "$log" || true)
+  grep -Eq 'error while loading shared libraries|cannot open shared object' <<<"$non_record"
 }
 
 # launch <label> <command...>: passes if the app outlives the timeout cleanly.
