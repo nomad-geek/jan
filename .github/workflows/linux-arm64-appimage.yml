@@ -296,8 +296,11 @@ jobs:
           # runner image does not. libgles2 is loaded at runtime with dlopen
           # (by WebKitGTK through libepoxy), not linked, so ldd does not catch
           # a missing copy. libgl1-mesa-dri gives Xvfb a software (llvmpipe)
-          # renderer. See "Host libraries" in the README.
-          sudo apt-get install -y xvfb xauth file "$fuse" libegl1 libgles2 libgl1 libgl1-mesa-dri
+          # renderer. gstreamer1.0-plugins-base provides the "app" element
+          # (appsink/appsrc) WebKitGTK's media pipeline needs; a desktop pulls
+          # it in as a dependency of its desktop environment, a bare runner
+          # image does not. See "Host libraries" in the README.
+          sudo apt-get install -y xvfb xauth file "$fuse" libegl1 libgles2 libgl1 libgl1-mesa-dri gstreamer1.0-plugins-base
           # libfuse2(t64) ships no fusermount; the FUSE launch needs one. Only
           # install it when missing: fuse and fuse3 conflict on 22.04.
           if ! command -v fusermount >/dev/null && ! command -v fusermount3 >/dev/null; then
